@@ -1,3 +1,38 @@
-# Local development requires Python 3.11. Docker installs CPU-only PyTorch.
--r requirements/api.txt
--r requirements/ingestion.txt
+# Shared project dependencies for Python 3.11.
+# Airflow itself is supplied and version-pinned by the Dockerfile.
+# Docker installs CPU-only PyTorch before this file.
+torch==2.5.1
+
+# Core retrieval
+numpy==1.26.4
+faiss-cpu==1.8.0
+requests==2.32.3
+
+# Embedding models
+sentence-transformers==3.2.1
+transformers==4.46.3
+
+# Web application
+fastapi==0.115.6
+jinja2==3.1.5
+
+# API server
+uvicorn[standard]==0.34.0
+
+# Document ingestion
+pandas==2.0.3
+openpyxl==3.1.5
+xlrd==2.0.1
+pdfplumber==0.11.5
+pypdf==5.9.0
+python-docx==1.1.2
+pdf2image==1.17.0
+pytesseract==0.3.13
+
+# Testing
+packaging==24.2
+httpx==0.28.1
+
+# Evaluation
+ragas==0.3.7
+langchain-openai==0.3.33

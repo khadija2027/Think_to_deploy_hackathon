@@ -62,23 +62,31 @@ ehthumbs.db
 Thumbs.db
 
 # Airflow
-T2D_Chatbot_for_HR/logs/
+logs/
 airflow.cfg
 unittests.cfg
 
 # Données Airflow
-T2D_Chatbot_for_HR/dataset/
-T2D_Chatbot_for_HR/anonymized_dataset/
-T2D_Chatbot_for_HR/parsed/
-T2D_Chatbot_for_HR/chunked/
-T2D_Chatbot_for_HR/failed/
-T2D_Chatbot_for_HR/logs_pipeline/
-T2D_Chatbot_for_HR/cache/
-T2D_Chatbot_for_HR/output/
-T2D_Chatbot_for_HR/backend/
+dataset/
+anonymized_dataset/
+parsed/
+chunked/
+failed/
+logs_pipeline/
+cache/
+output/
+backend/
 
 # Shared RAG runtime artifacts
-T2D_Chatbot_for_HR/rag_index/
-T2D_Chatbot_for_HR/pipeline_work/
+rag_index/
+pipeline_work/
 .venv/
 .test-runtime/
+
+# Shared credential, test and evaluation exclusions
+.env.*
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+evaluation/results/

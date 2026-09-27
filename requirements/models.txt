@@ -1,3 +1,0 @@
--r base.txt
-sentence-transformers==3.2.1
-transformers==4.46.3

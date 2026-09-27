@@ -1,4 +1,4 @@
-"""Run with Python 3.11 and requirements/test.txt; no LLM/model downloads needed."""
+"""Run with Python 3.11 and requirements.txt; no LLM/model downloads needed."""
 import json
 import os
 import sys
@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "T2D_Chatbot_for_HR"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from rag_core import pipeline
 from rag_core.service import GenerationUnavailable, IndexNotReady, RAGService, generate_answer
 from rag_core.storage import current_manifest, read_json, snapshot_directory, write_json

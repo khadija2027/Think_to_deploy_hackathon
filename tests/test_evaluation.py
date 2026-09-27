@@ -1,7 +1,12 @@
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+
+PROJECT_DIR = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PROJECT_DIR))
+sys.path.insert(0, str(PROJECT_DIR / "evaluation"))
 
 from run_ragas import load_dataset, reconstruct_contexts, report, select_batch, scored, ANSWER_METRICS
 

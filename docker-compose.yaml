@@ -1,7 +1,8 @@
 x-airflow-common: &airflow-common
   build:
     context: .
-    dockerfile: docker/airflow.Dockerfile
+    dockerfile: Dockerfile
+    target: airflow
   environment: &airflow-env
     AIRFLOW__CORE__EXECUTOR: LocalExecutor
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
@@ -15,12 +16,12 @@ x-airflow-common: &airflow-common
     RAG_INDEX_DIR: /opt/airflow/index
     EMBEDDING_MODEL: ${EMBEDDING_MODEL:-paraphrase-multilingual-MiniLM-L12-v2}
   volumes:
-    - ./T2D_Chatbot_for_HR/dags:/opt/airflow/dags:ro
-    - ./T2D_Chatbot_for_HR/dataset:/opt/airflow/dataset:ro
+    - ./dags:/opt/airflow/dags:ro
+    - ./dataset:/opt/airflow/dataset:ro
     - airflow-logs:/opt/airflow/logs
     # Keep intermediate artifacts on the host for inspection and debugging.
     # Each run writes parsed.json, anonymized.json, chunks.json and report.json.
-    - ./T2D_Chatbot_for_HR/pipeline_work:/opt/airflow/pipeline
+    - ./pipeline_work:/opt/airflow/pipeline
     - rag-index:/opt/airflow/index
     - airflow-model-cache:/opt/airflow/model-cache
   depends_on:
@@ -83,7 +84,8 @@ services:
   fastapi:
     build:
       context: .
-      dockerfile: docker/api.Dockerfile
+      dockerfile: Dockerfile
+      target: api
     ports:
       - "127.0.0.1:8000:8000"
     environment:
@@ -107,6 +109,28 @@ services:
       retries: 5
       start_period: 30s
     restart: unless-stopped
+  rag-evaluation:
+    profiles: [evaluation]
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: evaluation
+    environment:
+      PYTHONPATH: /opt/project
+      HF_HOME: /opt/rag/model-cache
+      RAG_INDEX_DIR: /opt/rag/index
+      RAG_API_URL: http://fastapi:8000
+      RAGAS_DO_NOT_TRACK: "true"
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      GROQ_MODEL: ${GROQ_MODEL:-openai/gpt-oss-120b}
+    volumes:
+      - ./evaluation:/evaluation
+      - rag-index:/opt/rag/index:ro
+      - api-model-cache:/opt/rag/model-cache
+    healthcheck:
+      disable: true
+    restart: "no"
+
 volumes:
   postgres-data:
   airflow-logs:
