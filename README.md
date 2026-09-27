@@ -1,185 +1,214 @@
-# HR Document Assistant ? RAG Chatbot
+# Safran HR Chatbot
 
-A French-language HR assistant using FastAPI, Airflow, FAISS and Ollama or
-OpenRouter, with a resumable Ragas evaluation workflow.
-Employees open the chat directly; there are no LDAP services, accounts, JWTs, or
-session cookies in the application. Airflow retains its own operator login.
+Developed a Safran-focused HR chatbot using Retrieval-Augmented Generation (RAG)
+during **Tink to Deploy**, a national hackathon organized by the **CIT INPT Club**.
 
-## Run with Docker
-
-1. Start Docker Desktop with Linux containers.
-2. Put your HR documents in `dataset/` (subfolders are supported).
-   Supported formats: PDF, DOCX, DOC, XLSX, XLS, UTF-8 TXT and Markdown.
-3. Configure the root `.env` file. Do not replace
-   an existing API key. By default `LLM_PROVIDER=ollama` keeps generation local.
-   Run Ollama on the host with `ollama pull qwen3:4b` and `ollama serve`.
-   To use OpenRouter first, set `LLM_PROVIDER=auto`, `OPENROUTER_API_KEY`, and a model
-   available to your account. Existing API keys are ignored in Ollama-only mode.
-   On Docker Desktop, the API reaches the host through `host.docker.internal`.
-4. Build and start:
-
-   ```sh
-   docker compose up -d --build
-   ```
-
-5. Open the chat at http://localhost:8000. Until ingestion completes, the page
-   reports that documents are unavailable and questions receive a useful 503 error.
-6. Open Airflow at http://localhost:9080 (default operator account: `admin` / `admin`).
-   Trigger `safran_robust_faiss_rag_pipeline`, or use:
-
-   ```sh
-   docker compose exec airflow-scheduler airflow dags trigger safran_robust_faiss_rag_pipeline
-   ```
-
-The DAG is unpaused by default and scheduled daily. Initial builds download Python,
-OCR and CPU PyTorch dependencies. The first ingestion and first question also
-download the embedding model into persistent caches. Model generation requires
-either a working OpenRouter account/model or a reachable Ollama instance.
+The chatbot answers HR questions in French using information retrieved from local
+documents. It combines an automated document pipeline, a web chat interface, and
+an optional evaluation workflow.
 
 ## Project workflow
 
-The workflow has three parts: scheduled document ingestion, question answering,
-and optional evaluation. The diagram renders in GitHub and Mermaid-enabled
-Markdown previews.
-
 ```mermaid
 flowchart TD
-    subgraph Ingestion["1. Document ingestion ? Airflow"]
-        Documents["dataset/: PDF, Word, Excel, TXT, Markdown"]
-        Schedule["Daily schedule or manual DAG trigger"]
-        Discover["Discover files and fingerprint corpus"]
-        Changed{"Corpus changed or force rebuild?"}
-        Skip["Skip processing; retain current index"]
-        Parse["Extract text and tables; OCR scanned PDF pages"]
-        Mask["Mask personal information with regular expressions"]
-        Chunk["Split into 1,000-character chunks; 200-character overlap"]
-        Embed["Multilingual embeddings; normalize vectors"]
-        Publish["Write immutable snapshot; atomically publish current.json"]
-        Work["pipeline_work/: intermediate JSON and reports"]
-        Schedule --> Discover
-        Documents --> Discover --> Changed
-        Changed -->|No| Skip
-        Changed -->|Yes| Parse --> Mask --> Chunk --> Embed --> Publish
-        Parse -.-> Work
-        Mask -.-> Work
-        Chunk -.-> Work
-    end
-
-    Index[("Shared rag-index volume: FAISS vectors, chunks and metadata")]
-    Publish --> Index
-    Metadata[("PostgreSQL: Airflow metadata")]
-    Schedule -.-> Metadata
-
-    subgraph Chat["2. Question answering ? FastAPI"]
-        Browser["Browser chat"]
-        API["POST /api/ask"]
-        Query["Load snapshot and embed question with its model"]
-        Retrieve["FAISS similarity search: up to 5 passages"]
-        Prompt["Build prompt from question and retrieved passages"]
-        Provider{"Generation provider"}
-        Ollama["Ollama: local model"]
-        OpenRouter["OpenRouter: hosted model"]
-        Answer["Final answer and retrieved source metadata"]
-        Browser --> API --> Query --> Retrieve --> Prompt --> Provider
-        Provider -->|ollama or no API key| Ollama
-        Provider -->|auto with API key| OpenRouter
-        OpenRouter -->|Provider failure: fallback| Ollama
-        OpenRouter --> Answer
-        Ollama --> Answer --> Browser
-    end
-    Index --> Query
-    Index --> Retrieve
-
-    subgraph Evaluation["3. Optional evaluation ? Ragas"]
-        Dataset["evaluation/test_dataset.json"]
-        Runner["Collect actual chatbot answers"]
-        Context["Reconstruct exact contexts from returned snapshot and chunk IDs"]
-        Judge["Ragas metrics with Groq judge and local embeddings"]
-        Results["evaluation/results/: checkpoints, scores.csv, summary.json"]
-        Dataset -->|Questions only| Runner
-        Runner --> Context --> Judge --> Results
-        Dataset -->|Reference answers| Judge
-        Runner -->|Collection-only checkpoints| Results
-    end
-    Runner --> API
-    Answer --> Runner
-    Index --> Context
+    Documents["HR documents"] --> Airflow["Airflow: extract, clean and split text"]
+    Airflow --> Embeddings["Convert text into embeddings"]
+    Embeddings --> Index[("FAISS knowledge base")]
+    User["User question"] --> Search["Find relevant passages"]
+    Index --> Search
+    Search --> LLM["Ollama or OpenRouter: generate answer"]
+    LLM --> Answer["French answer with sources"]
+    Answer -.-> Evaluation["Optional: evaluate with Ragas and Groq"]
+    References["Evaluation questions and reference answers"] -.-> Evaluation
 ```
 
-Airflow prepares the knowledge base before questions can be answered. The API
-reads the published index and generates an answer from retrieved passages.
-Evaluation sends questions through that same API, then scores the saved answers;
-reference answers are supplied only to the judge. Groq is the evaluation provider,
-while Ollama or OpenRouter generates the chatbot's answers.
+1. **Prepare documents:** Airflow extracts text, masks personal information, and builds the FAISS index.
+2. **Answer questions:** FastAPI retrieves relevant passages and sends them to the language model.
+3. **Evaluate quality:** Ragas compares chatbot outputs against reference answers using a Groq judge.
 
-### Index publication and reliability
+## Technology stack
 
-The API uses the model recorded by the pipeline, avoiding embedding mismatches.
-The default is `paraphrase-multilingual-MiniLM-L12-v2`. Changing `EMBEDDING_MODEL`
-requires recreating the Airflow containers and running ingestion again. The API
-reloads a new snapshot on the next question without a restart.
-
-Unchanged corpora skip processing. Changed or deleted documents trigger a full
-rebuild from the remaining files. Removing all documents publishes an empty
-snapshot so deleted content cannot continue to appear in answers. A parsing or
-indexing failure leaves the last successful index available; input files are never
-moved or deleted. The corpus limit is 5,000 chunks and each source file is limited
-to 50 MB. Exceeding a limit fails the run instead of silently omitting content.
-
-To recreate intermediate files for an unchanged corpus, trigger the DAG manually
-with `{"force_rebuild": true}` as its configuration. This preserves the normal
-idempotent behavior of scheduled runs.
-
-Airflow passes only working-directory paths through XCom. Intermediate JSON files
-and reports live in `pipeline_work/` on the host; vectors and
-matching chunks live on `rag-index`.
-PostgreSQL holds Airflow metadata, not chat history. Old index snapshots and working
-files are retained for debugging; this demo does not automatically prune them.
-
-PII masking uses regular expressions and is not complete anonymization. Source
-filenames remain visible in citations. Answers are generated from retrieved text;
-the UI lists retrieved sources, which are not a claim that every answer is correct.
-The chat does not persist conversations. The separate evaluation runner saves
-measured scores and checkpoints under `evaluation/results/`.
-
-## Configuration and endpoints
-
-Configure provider, embedding-model and Airflow operator settings in the root `.env`.
-Compose defaults are declared in `docker-compose.yaml`.
-The root `.env` is the only environment file and is ignored by Git. Docker
-Compose reads it automatically; local Python commands require environment
-variables to be set in the shell.
-
-| Variable | Purpose / Compose default |
+| Component | Technology |
 | --- | --- |
-| `LLM_PROVIDER` | `ollama`; use `auto` for OpenRouter with Ollama fallback |
-| `OLLAMA_MODEL` | `qwen3:4b` |
-| `OLLAMA_URL` | `http://host.docker.internal:11434/api/generate` |
-| `OPENROUTER_API_KEY` | Hosted generation credential; optional in Ollama mode |
+| Web application | FastAPI, HTML and Jinja2 |
+| Document pipeline | Apache Airflow |
+| Embeddings | Sentence Transformers, multilingual MiniLM |
+| Vector search | FAISS |
+| Answer generation | Ollama or OpenRouter |
+| Evaluation | Ragas and Groq |
+| Deployment | Docker Compose; PostgreSQL for Airflow metadata |
+
+## Project structure
+
+```text
+rag_core/           Ingestion, retrieval, generation, API and CLI
+frontend_chatbot/   Chat templates and static assets
+dags/               Airflow ingestion DAG
+dataset/            Local HR documents
+pipeline_work/      Generated ingestion checkpoints and reports
+evaluation/         Evaluation runner, dataset and saved results
+tests/              Unit, regression and container integration tests
+init_airflow.py     Airflow database and operator initialization
+Dockerfile          API, Airflow and evaluation build targets
+docker-compose.yaml Services, networks and persistent volumes
+requirements.txt    Shared Python dependencies
+.env                Local configuration and credentials
+```
+
+Source documents, generated results, and `.env` are excluded from Git.
+Run the commands below from the project root.
+
+## Getting started
+
+### 1. Prepare documents and configuration
+
+Start Docker Desktop with Linux containers. Place your HR documents in `dataset/`.
+Supported formats: **PDF, DOCX, DOC, XLSX, XLS, TXT and Markdown**, including scanned
+PDFs through OCR.
+
+Configure the root `.env` with your preferred provider. For local generation:
+
+```dotenv
+LLM_PROVIDER=ollama
+OLLAMA_MODEL=qwen3:4b
+OLLAMA_URL=http://host.docker.internal:11434/api/generate
+```
+
+Download the model and ensure Ollama is running on the host:
+
+```sh
+ollama pull qwen3:4b
+ollama serve
+```
+
+If Ollama is already running, skip `ollama serve`. To use OpenRouter, set
+`LLM_PROVIDER=auto`, `OPENROUTER_API_KEY`, and `OPENROUTER_MODEL` in `.env`.
+In this mode, generation falls back to Ollama if OpenRouter fails.
+
+### 2. Start the services
+
+```sh
+docker compose up -d --build
+```
+
+| Interface | Address | Access |
+| --- | --- | --- |
+| Chatbot | http://localhost:8000 | No login |
+| API documentation | http://localhost:8000/docs | No login |
+| Airflow | http://localhost:9080 | Default: `admin` / `admin` |
+
+Airflow credentials can be configured with `AIRFLOW_ADMIN_USER` and
+`AIRFLOW_ADMIN_PASSWORD`. Initial builds and model downloads may take time.
+
+### 3. Build the knowledge base
+
+Trigger the ingestion DAG from Airflow or run:
+
+```sh
+docker compose exec airflow-scheduler airflow dags trigger safran_robust_faiss_rag_pipeline
+```
+
+The DAG also runs daily. Once ingestion completes, open the chatbot and ask a
+question. Before a nonempty index is available, questions return HTTP 503.
+
+## Configuration
+
+Docker Compose reads the single root `.env` file automatically. Preserve existing
+credentials when editing it.
+
+| Variable | Purpose / default |
+| --- | --- |
+| `LLM_PROVIDER` | `ollama`, or `auto` for OpenRouter with fallback |
+| `OLLAMA_MODEL` | Local model: `qwen3:4b` |
+| `OLLAMA_URL` | Docker host endpoint: `http://host.docker.internal:11434/api/generate` |
+| `OPENROUTER_API_KEY` | Optional hosted generation credential |
 | `OPENROUTER_MODEL` | `mistralai/mistral-small-3.2-24b-instruct` |
 | `EMBEDDING_MODEL` | `paraphrase-multilingual-MiniLM-L12-v2` |
-| `AIRFLOW_ADMIN_USER` / `AIRFLOW_ADMIN_PASSWORD` | Initial operator account; defaults to `admin` / `admin` |
+| `AIRFLOW_ADMIN_USER` / `AIRFLOW_ADMIN_PASSWORD` | Initial Airflow operator account |
 | `AIRFLOW_WEBSERVER_SECRET_KEY` | Airflow webserver signing key |
-| `GROQ_API_KEY` | Evaluation judge credential; unnecessary for collection-only runs |
-| `GROQ_MODEL` | `openai/gpt-oss-120b` |
+| `GROQ_API_KEY` | Evaluation judge credential |
+| `GROQ_MODEL` | Evaluation model: `openai/gpt-oss-120b` |
 
-Docker binds the web interfaces to localhost. The API is intentionally open to
-anyone who can reach its port.
+## Evaluation
+
+Evaluation is optional and does not start with the normal stack. It uses
+`evaluation/test_dataset.json` and the running chatbot API. **Groq judges answers;
+Ollama or OpenRouter generates them.** Reference answers are never sent to the chatbot.
+
+Build the evaluator and collect answers without judge calls:
+
+```sh
+docker compose build rag-evaluation
+docker compose run --rm --no-deps rag-evaluation --collect-only --output /evaluation/results/baseline
+```
+
+Set `GROQ_API_KEY` in `.env`, then score the saved answers:
+
+```sh
+docker compose run --rm --no-deps rag-evaluation --answers-from /evaluation/results/baseline --output /evaluation/results/groq
+```
+
+For batches of ten questions, append `--next-batch` to the scoring command and
+repeat for each unfinished batch. Reruns reuse saved answers and successful scores.
+Use a new output directory when changing the dataset, index, or judge. Only one
+process should write to an output directory at a time.
+
+| Output in `evaluation/results/<run>/` | Contents |
+| --- | --- |
+| `records/` | Answers, retrieved passages, scores and errors |
+| `scores.csv` | Per-question metric scores |
+| `summary.json` | Aggregate scores, sample counts and failures |
+| `metadata.json` | Dataset, index and model information |
+| `batches.json` | Batch membership and scoring progress |
+| `ragas_inputs.jsonl` | Collected inputs for evaluation |
+
+Metrics include context precision, context recall, faithfulness, response
+relevancy and factual correctness. Unanswerable questions are evaluated separately
+for appropriate abstention. Inspect errors, missing sources and sample counts
+before interpreting averages; blank scores are not zeros.
+
+## Development and tests
+
+Use **Python 3.11**. On Windows PowerShell:
+
+```powershell
+py -3.11 -m venv .venv
+.venv/Scripts/python -m pip install -r requirements.txt
+.venv/Scripts/python -m unittest discover -s tests -v
+```
+
+The unit and regression tests use deterministic embeddings and require no model
+download or paid API calls. To run the full ingestion smoke test inside Docker:
+
+```powershell
+docker compose run --rm --no-deps -v "${PWD}/tests:/tests:ro" airflow-scheduler python /tests/container_smoke.py
+```
+
+This integration test uses temporary documents, real OCR and embeddings, and a
+stubbed answer generator. It does not modify the published knowledge base.
+
+For local development, activate the virtual environment and run:
+
+```sh
+python -m rag_core serve
+python -m rag_core status
+python -m rag_core ask "Quelle est la politique de cong?s ?"
+```
+
+Local commands read shell environment variables; they do not load `.env`
+automatically. They use `rag_index/` by default, independently of Docker's volume.
+To inspect the Docker index, run `docker compose exec fastapi python -m rag_core status`.
+
+## API and troubleshooting
 
 | Endpoint | Purpose |
 | --- | --- |
-| `GET /` or `/chatbot` | Chat without login |
-| `POST /api/ask` | JSON question; answer and source metadata |
+| `GET /` or `/chatbot` | Chat interface |
+| `POST /api/ask` | Question, answer and source metadata |
 | `GET /api/status` | Published index metadata |
-| `GET /health` | Process liveness and index status |
-| `GET /ready` | 200 when index artifacts exist and contain chunks, otherwise 503 |
-| `GET /docs` | Interactive API documentation |
-
-Readiness reports index availability; it does not make a paid LLM request or
-download the embedding model. Provider errors are returned as 502, and unavailable
-retrieval as 503. Actual loading checks vector dimensions and chunk alignment.
-
-## Validation and troubleshooting
+| `GET /health` | Process health and index status |
+| `GET /ready` | Index availability; does not test the LLM |
+| `GET /docs` | Interactive API reference |
 
 ```sh
 docker compose config --quiet
@@ -188,142 +217,17 @@ docker compose logs --tail=100 airflow-init airflow-scheduler fastapi
 docker compose exec airflow-scheduler airflow dags list-import-errors
 ```
 
-The regression tests use real FAISS with deterministic embeddings, so tests do not
-need an API key or model download. Use Python 3.11:
+- **HTTP 503:** check documents and ingestion status; the index may be unavailable or empty.
+- **HTTP 502:** check the generation provider, model and credentials.
+- **Force reprocessing:** trigger the DAG with `{"force_rebuild": true}` in Airflow.
+- **Change embedding model:** recreate Airflow containers and rebuild the index.
 
-```sh
-py -3.11 -m venv .venv
-# Windows PowerShell
-.venv/Scripts/python -m pip install -r requirements.txt
-.venv/Scripts/python -m unittest discover -s tests -v
-```
+## Design notes and limitations
 
-For an integration test inside Docker (PowerShell, from the repository root):
-
-```powershell
-docker compose run --rm --no-deps -v "${PWD}/tests:/tests:ro" airflow-scheduler python /tests/container_smoke.py
-```
-
-This test creates temporary synthetic TXT, DOCX, XLSX and scanned PDF documents,
-runs the real Airflow DAG and embedding model, and checks retrieval and citations.
-It uses isolated index files and a stubbed answer generator; it does not publish
-sample policies into the chat's knowledge base or make paid LLM calls.
-
-## Project layout and local commands
-
-```text
-Dockerfile                  API, Airflow and evaluation build targets
-requirements.txt            Shared dependency pins for the entire project
-.env                        Local configuration and credentials (ignored by Git)
-rag_core/                   Retrieval, generation, ingestion, web app and CLI
-frontend_chatbot/            HTML templates and static assets
-dags/                       Airflow pipeline definition
-evaluation/                 Ragas runner and evaluation dataset
-dataset/                    Your source documents (ignored by Git)
-pipeline_work/              Ingestion checkpoints and reports (ignored by Git)
-init_airflow.py              Airflow database and operator initialization
-tests/                      Pipeline, answer, evaluation and container tests
-docker-compose.yaml         Service configuration and persistent volumes
-```
-
-The API uses `rag_core.web:create_app` as its single application factory.
-For local development, install the root `requirements.txt` with Python 3.11,
-then run these commands from the repository root:
-
-```sh
-python -m rag_core serve
-python -m rag_core status
-python -m rag_core ask "Quelle est la politique de congés ?"
-```
-
-Local commands read environment variables and default to the local `rag_index/`
-directory; they do not automatically load `.env` or Docker's index volume.
-To query the running Docker index, use
-`docker compose exec fastapi python -m rag_core status` from the repository root.
-
-Compose waits for PostgreSQL health and successful database initialization before
-starting Airflow. The Airflow build target pins the installed Airflow version to
-the version supplied by its base image.
-
-## Shared project configuration
-
-Run Docker commands from the repository root. This project has one README,
-one Git ignore file, one dependency list, one Compose file and one Dockerfile.
-The Dockerfile has `api`, `airflow` and `evaluation` targets. All targets install
-the shared dependencies; this favors a single install command over smaller images.
-Airflow itself remains pinned to its base-image version in the Airflow target.
-The evaluation service uses the `evaluation` profile and is started explicitly
-with `docker compose run`; normal startup does not launch evaluations.
-
-## Ragas evaluation
-
-The evaluator runs the actual chatbot HTTP endpoint with `evaluation/test_dataset.json`.
-It reconstructs the exact ordered prompt passages from the returned source/chunk
-identifiers and immutable index version. References are never sent to the chatbot.
-Groq is used only as the evaluation judge; the chatbot keeps its own model.
-The judge receives questions, reference answers, chatbot answers and retrieved text.
-
-If judge authentication is unavailable, collect locally first:
-
-```powershell
-docker compose build rag-evaluation
-docker compose run --rm --no-deps rag-evaluation --collect-only --output /evaluation/results/baseline
-```
-
-After collection finishes, correct `GROQ_API_KEY` in `.env`
-and score the saved collection with the `--answers-from` command below.
-To resume collection, rerun the collection command with the same output directory. Create a new
-container with `docker compose run` after changing credentials; `docker start`
-on an old container retains its old environment. Only one process can write a
-given output directory at a time.
-
-From the repository root, with the normal stack already running:
-
-```powershell
-docker compose build rag-evaluation
-docker compose run --no-deps rag-evaluation --output /evaluation/results/groq
-```
-
-The root `.env` is the only environment file. Set `GROQ_API_KEY` and
-`GROQ_MODEL=openai/gpt-oss-120b` there for scoring. Collection-only runs do not
-require a judge API key.
-
-The Compose configuration reads `GROQ_API_KEY` and `GROQ_MODEL` from the ignored
-`.env` file. The selected judge is `openai/gpt-oss-120b`, hosted
-by Groq at `https://api.groq.com/openai/v1`. Never place keys in the dataset.
-Provider account rate limits and pricing apply.
-The runner spaces judge requests by 20 seconds, retries transient failures, and
-uses separate requests for Ragas's multiple relevancy samples because Groq accepts
-only one completion per request. A full evaluation can take several hours.
-Collection-only resumes ignore judge settings because collection makes no judge calls.
-
-To score the existing baseline collection while it continues running:
-
-```powershell
-docker compose run --no-deps rag-evaluation --answers-from /evaluation/results/baseline --output /evaluation/results/groq
-```
-
-This waits for each saved answer and does not regenerate it. Collection and scoring
-must use separate output directories. Stop the scoring container if collection
-is abandoned, since it waits for missing records.
-
-For a small independent smoke test:
-
-```powershell
-docker compose run --no-deps rag-evaluation --limit 2 --output /evaluation/results/smoke
-```
-
-For the 90-question dataset, run nine batches of ten using the same judge and
-the existing output directory. After quota is available, run:
-
-```powershell
-docker compose run --rm --no-deps rag-evaluation --answers-from /evaluation/results/baseline --output /evaluation/results/groq --next-batch
-```
-
-Runner checks (no judge calls):
-
-```powershell
-docker compose run --rm --no-deps -v "${PWD}/tests:/tests:ro" --entrypoint python rag-evaluation -m unittest discover -s /tests -p "test_evaluation.py" -v
-```
-
-Ragas documentation: https://docs.ragas.io/en/v0.3.7/
+- Documents are split into 1,000-character chunks with 200-character overlap; retrieval returns up to five passages.
+- Unchanged corpora skip ingestion. Document changes trigger a rebuild; failed ingestion preserves the last published index.
+- Index snapshots are immutable and published atomically. The API loads updates on the next question.
+- Limits are 50 MB per source file and 5,000 chunks per corpus. PPTX is not supported.
+- Personal-information masking uses regular expressions and is incomplete. Retrieved sources and judge scores do not guarantee correct answers.
+- The chat has no authentication and does not persist conversations. Docker binds web interfaces to localhost; PostgreSQL stores Airflow metadata.
+- Intermediate files, index snapshots and evaluation results are retained for inspection; automatic cleanup is not implemented.
