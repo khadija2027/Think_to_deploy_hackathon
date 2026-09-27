@@ -320,46 +320,6 @@ the existing output directory. After quota is available, run:
 docker compose run --rm --no-deps rag-evaluation --answers-from /evaluation/results/baseline --output /evaluation/results/groq --next-batch
 ```
 
-Each invocation runs only the first unfinished batch and then exits. Repeat after
-checking quota; do not launch nine jobs in parallel. Use `--batch 1` through
-`--batch 9` instead of `--next-batch` to select a specific batch. Existing successful
-metrics (including zero scores) are reused. `scores.csv` and `summary.json` retain
-the full-dataset report; `batches.json` lists membership and scored counts.
-An exhausted rate limit stops scoring after SDK retries, preserving checkpoints.
-Batching does not increase quota. Judge model, prompts and generation settings
-are unchanged.
-
-Host outputs are in `evaluation/results/groq/`; original collected answers remain
-in `evaluation/results/baseline/`. Inside the container these paths start with `/evaluation/results/`:
-
-- `metadata.json`: dataset hash, index version, judge and embedding model.
-- `records/*.json`: references, actual responses, exact retrieved passages, latency,
-  individual metric scores, failures and skipped metrics. Saved incrementally.
-- `ragas_inputs.jsonl`: successful question/context/response/reference records.
-- `scores.csv`: scores per question; blank values are not zero scores.
-- `summary.json`: means, valid sample counts, failures and source-availability groups.
-
-Rerunning resumes saved answers and successful metric scores. Failed metrics are
-retried; generation failures remain recorded so they are visible in the baseline.
-Use a new output directory for a new chatbot configuration or a changed dataset,
-index or judge. Do not change the chatbot while a baseline is running.
-
-Answerable questions use Ragas context precision, context recall, faithfulness,
-response relevancy and factual correctness (F1). Response relevancy uses the
-existing multilingual embedding model locally, without another embedding API.
-Unanswerable questions use a separate Ragas AspectCritic for appropriate abstention;
-they are excluded from answerable-question metric averages.
-
-The dataset initially contained 30 questions referencing
-`avantages_sociaux_safran_modele.pptx`, absent from the published index. These are
-flagged and included, with separate grouped means. Check the current report for
-the actual missing-source list. Do not interpret missing-source failures as solely
-a generation problem. Reference answers still require human verification.
-
-Judge scores are estimates, not proof of correctness. Review individual failures
-and compare runs with the same judge and fixed dataset. A completed run may contain
-generation or metric errors: always inspect the error counts and scored denominators.
-
 Runner checks (no judge calls):
 
 ```powershell
